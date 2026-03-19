@@ -68,9 +68,7 @@ initStars();
 drawStars();
 
 // ─── STATE ────────────────────────────────────
-const STORAGE_KEY = 'nova_api_key';
-const HISTORY_KEY = 'nova_history';
-const MODEL = 'claude-sonnet-4-20250514';
+const STORAGE_KEY = 'nova_gemini_key';
 const MAX_HISTORY = 20; // keep last 20 messages for context
 
 let apiKey = localStorage.getItem(STORAGE_KEY) || '';
@@ -183,8 +181,8 @@ apiKeyInput.addEventListener('keydown', e => {
 
 function handleSaveKey() {
   const val = apiKeyInput.value.trim();
-  if (!val.startsWith('sk-ant-')) {
-    modalError.textContent = 'Invalid key format. Must start with sk-ant-…';
+  if (!val || val.length < 15) {
+    modalError.textContent = 'Please enter a valid Gemini API key (starts with AIza...)';
     return;
   }
   apiKey = val;
@@ -277,36 +275,44 @@ async function sendMessage(text) {
   scrollToBottom();
 }
 
-// ─── API CALL ─────────────────────────────────
+// ─── GEMINI API CALL ──────────────────────────
+const GEMINI_MODEL = 'gemini-2.0-flash';
+
 async function callClaude(messages) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  // Convert history to Gemini format: role must be "user" or "model"
+  const contents = messages.map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+
+  const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: messages,
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: contents,
+      generationConfig: { maxOutputTokens: 1024, temperature: 0.7 },
     }),
   });
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     const msg = err?.error?.message || '';
-
-    if (res.status === 401) throw new Error('Invalid API key. Click the 🔑 icon to update it.');
-    if (res.status === 429) throw new Error('Rate limit hit. Please wait a moment and try again.');
-    if (res.status === 529) throw new Error('Claude is overloaded right now. Try again in a few seconds.');
-    throw new Error(`API error (${res.status})${msg ? ': ' + msg : ''}`);
+    if (res.status === 400) throw new Error('Invalid API key. Re-enter your Gemini key.');
+    if (res.status === 403) throw new Error('API key does not have permission. Check your Gemini key.');
+    if (res.status === 429) throw new Error('Rate limit reached. Please wait a moment and try again.');
+    throw new Error(`Error (${res.status})${msg ? ': ' + msg : ''}`);
   }
 
   const data = await res.json();
-  return data.content?.[0]?.text || 'No response received.';
+  const candidate = data.candidates?.[0];
+  if (!candidate) throw new Error('No response from Gemini. Please try again.');
+  if (candidate.finishReason === 'SAFETY') {
+    return "I wasn't able to generate a response for that query. Try rephrasing!";
+  }
+  return candidate.content?.parts?.[0]?.text || 'No response received.';
 }
 
 // ─── DOM HELPERS ─────────────────────────────
